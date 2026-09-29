@@ -15,8 +15,8 @@ concurrency:
   cancel-in-progress: false
 jobs:
   images:
-    # Skips until the repository variable DOMAIN is set (docs/DEPLOY.md).
-    if: vars.DOMAIN != '' && (github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success')
+    # Skips until the repository variable DEPLOY_ENABLED is "true" (docs/DEPLOY.md).
+    if: vars.DEPLOY_ENABLED == 'true' && (github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success')
     runs-on: ubuntu-latest
     timeout-minutes: 30
     outputs:
@@ -54,7 +54,6 @@ jobs:
         with:
           context: .
           target: web
-          build-args: PUBLIC_URL=https://${{ vars.DOMAIN }}
           push: true
           tags: ${{ steps.meta.outputs.prefix }}-web:${{ steps.meta.outputs.tag }},${{ steps.meta.outputs.prefix }}-web:latest
           cache-from: type=gha,scope=web
@@ -72,17 +71,24 @@ jobs:
     needs: images
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    environment:
-      name: production
-      url: https://${{ vars.DOMAIN }}
+    environment: production
     env:
       DEPLOY_PATH: ${{ vars.DEPLOY_PATH || '/opt/openmuse' }}
       SSH_PORT: ${{ secrets.VPS_PORT || '22' }}
+      JOIN_TAILNET: ${{ secrets.TS_OAUTH_CLIENT_ID != '' }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ github.event.workflow_run.head_sha || github.sha }}
           persist-credentials: false
+      # Optional: reach a VPS that only accepts SSH over Tailscale.
+      - name: Join the tailnet
+        if: env.JOIN_TAILNET == 'true'
+        uses: tailscale/github-action@v3
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:ci
       - name: Configure SSH
         env:
           SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
@@ -103,7 +109,7 @@ jobs:
       - name: Upload stack files
         run: |
           ssh vps "mkdir -p '$DEPLOY_PATH'"
-          scp infra/compose.prod.yaml infra/deploy.sh infra/.env.production.example "vps:$DEPLOY_PATH/"
+          scp infra/compose.prod.yaml infra/compose.tailnet.yaml infra/compose.tailnet-ipv6.yaml infra/deploy.sh infra/.env.production.example "vps:$DEPLOY_PATH/"
       - name: Pull and restart
         env:
           PREFIX: ${{ needs.images.outputs.prefix }}
@@ -113,7 +119,3 @@ jobs:
         run: |
           printf '%s' "$REGISTRY_TOKEN" | ssh vps "docker login ghcr.io -u '$REGISTRY_USER' --password-stdin"
           ssh vps "cd '$DEPLOY_PATH' && printf 'IMAGE_PREFIX=%s\nIMAGE_TAG=%s\n' '$PREFIX' '$TAG' > .deploy.env && ./deploy.sh; status=\$?; docker logout ghcr.io >/dev/null; exit \$status"
-      - name: Health check
-        env:
-          DOMAIN: ${{ vars.DOMAIN }}
-        run: curl --fail --silent --show-error --retry 10 --retry-delay 6 --retry-all-errors "https://$DOMAIN/api/health"

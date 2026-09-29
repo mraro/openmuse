@@ -10,21 +10,35 @@ push main → CI ✓ → Deploy workflow → ghcr.io/<owner>/openmuse-{api,web,b
 
 | Container | Image | Role |
 | --- | --- | --- |
-| `web` | Caddy + exported Expo web app | HTTPS on 80/443, serves the app, proxies `/api/*` |
+| `web` | Caddy + exported Expo web app | HTTPS on the chosen network, serves the app, proxies `/api/*` |
 | `api` | Node API (`pnpm build:server`) | API, CopilotKit runtime, task worker, PGlite in the `api-data` volume |
 | `browser-worker` | `apps/worker` | Chromium with persistent profiles, reachable only from `api` |
 
-Files: [`Dockerfile`](../Dockerfile), [`infra/compose.prod.yaml`](../infra/compose.prod.yaml),
-[`infra/Caddyfile`](../infra/Caddyfile), [`infra/deploy.sh`](../infra/deploy.sh),
-[`.github/workflows/deploy.yml`](../.github/workflows/deploy.yml).
+Files: [`Dockerfile`](../Dockerfile), [`infra/compose.prod.yaml`](../infra/compose.prod.yaml)
+(plus `compose.tailnet*.yaml`), [`infra/Caddyfile`](../infra/Caddyfile),
+[`infra/deploy.sh`](../infra/deploy.sh), [`.github/workflows/deploy.yml`](../.github/workflows/deploy.yml).
 
-A public server must run `WORKSPACE_MODE=live`: sample mode has no sign-in and
-refuses to bind outside loopback.
+## Choose the network
+
+`./deploy.sh` asks once which network answers OpenMuse and saves the answer in
+`.env` (`./deploy.sh --configure` changes it later):
+
+| Mode | Listens on | HTTPS | Reached by |
+| --- | --- | --- | --- |
+| `tailnet` (default) | The VPS's Tailscale IPs only | Certificate from Tailscale for `<machine>.<tailnet>.ts.net` | Devices in your tailnet |
+| `public` | Every interface, ports 80 and 443 | Let's Encrypt for your domain | Anyone on the internet |
+| `local` | `127.0.0.1:<port>`, plain HTTP | Your own proxy or SSH tunnel | Only the VPS itself |
+
+The server always runs `WORKSPACE_MODE=live`: sample mode has no sign-in.
 
 ## 1. Prepare the VPS (once)
 
-Ubuntu/Debian with 2 GB+ RAM (4 GB recommended for Chromium). Point your
-domain's DNS A/AAAA record at the VPS and open ports 22, 80 and 443.
+Ubuntu/Debian with 2 GB+ RAM (4 GB recommended for Chromium).
+
+- **tailnet:** install Tailscale and join it (`curl -fsSL https://tailscale.com/install.sh | sh`
+  then `sudo tailscale up`). In the [admin console](https://login.tailscale.com/admin/dns)
+  enable MagicDNS and **HTTPS Certificates**. No public port is needed besides SSH.
+- **public:** point your domain's DNS A/AAAA record at the VPS and open ports 80 and 443.
 
 ```sh
 # As root
@@ -39,17 +53,24 @@ su - deploy -c 'mkdir -p ~/.ssh && ssh-keygen -t ed25519 -N "" -f ~/.ssh/github_
 cat /home/deploy/.ssh/github_deploy   # copy this private key into VPS_SSH_KEY, then delete the file
 ```
 
-Create the production environment file:
+Copy the stack files from your clone of this repository and run the guided setup
+as `deploy`:
 
 ```sh
-sudo -u deploy nano /opt/openmuse/.env   # start from infra/.env.production.example
-chmod 600 /opt/openmuse/.env
+scp infra/compose.prod.yaml infra/compose.tailnet*.yaml infra/deploy.sh \
+  infra/.env.production.example deploy@<vps>:/opt/openmuse/
+ssh -t deploy@<vps> /opt/openmuse/deploy.sh
 ```
 
-Generate secrets with `openssl rand -base64 32` (for `OPENMUSE_ACCESS_KEY`,
-`TOKEN_ENCRYPTION_KEY` and `WORKER_TOKEN`). Set `DOMAIN` to the same value as the
-GitHub variable below. For Google, register
-`https://<DOMAIN>/api/google/callback` as the OAuth redirect URI.
+It asks for the network, then for every missing value: model and provider key,
+CopilotKit Intelligence key, and the secrets (press Enter to generate them; the
+sign-in access key is printed once). Everything is saved to
+`/opt/openmuse/.env` with mode 600. In tailnet mode it can also set
+`net.ipv4.ip_nonlocal_bind=1` so Docker can bind the Tailscale IP after a
+reboot even if it starts before Tailscale. For Google, register
+`<PUBLIC_URL>/api/google/callback` as the OAuth redirect URI.
+
+The GitHub deploy never asks: if a value is missing it stops and names it.
 
 ## 2. Configure GitHub (once)
 
@@ -57,32 +78,35 @@ In **Settings → Secrets and variables → Actions**:
 
 | Kind | Name | Value |
 | --- | --- | --- |
-| Variable | `DOMAIN` | `muse.example.com` (no scheme). The workflow is skipped until this is set. |
+| Variable | `DEPLOY_ENABLED` | `true`. The workflow is skipped until this is set. |
 | Variable | `DEPLOY_PATH` | Optional, default `/opt/openmuse` |
 | Secret | `VPS_HOST` | VPS IP or hostname |
 | Secret | `VPS_USER` | `deploy` |
 | Secret | `VPS_SSH_KEY` | The private key from step 1 |
 | Secret | `VPS_PORT` | Optional, default `22` |
 | Secret | `VPS_KNOWN_HOSTS` | Optional but recommended: output of `ssh-keyscan <host>` run from a trusted machine. Without it the first key seen is trusted. |
+| Secret | `TS_OAUTH_CLIENT_ID`, `TS_OAUTH_SECRET` | Optional: when set, the runner joins your tailnet as `tag:ci` before SSH, so `VPS_HOST` can be the VPS's Tailscale name and SSH can be closed to the internet. Create the OAuth client (scope `auth_keys`, tag `tag:ci`) in the Tailscale admin console and allow `tag:ci` to reach the VPS on port 22 in your ACLs. |
 
 The workflow deploys to the `production` environment, so you can add required
 reviewers there under **Settings → Environments** if you want a manual gate.
 
 ## 3. Deploy
 
-Push to `main`, or run **Actions → Deploy → Run workflow**. The workflow waits
-for every container to become healthy and then checks
-`https://<DOMAIN>/api/health`. Open `https://<DOMAIN>` and sign in with
-`OPENMUSE_ACCESS_KEY`.
+Push to `main`, or run **Actions → Deploy → Run workflow**. `deploy.sh` waits
+for every container to become healthy and then checks `<PUBLIC_URL>/api/health`
+from the VPS itself (a GitHub runner cannot reach a tailnet-only site). Open
+`PUBLIC_URL` (shown by `deploy.sh`) and sign in with `OPENMUSE_ACCESS_KEY`.
 
-For native apps, build with `EXPO_PUBLIC_API_URL=https://<DOMAIN>` and add their
-origin to `ALLOWED_ORIGINS` if needed.
+The web image calls the API on whatever origin serves it, so one image works in
+every mode. For native apps, build with `EXPO_PUBLIC_API_URL=<PUBLIC_URL>` and
+add their origin to `ALLOWED_ORIGINS` in `.env` if needed.
 
 ## Operations
 
 ```sh
 cd /opt/openmuse
 ./deploy.sh                 # redeploy the current tag (e.g. after editing .env)
+./deploy.sh --configure     # switch between tailnet, public and local
 ./deploy.sh <12-char-sha>   # roll back or forward to a pushed commit
 docker compose --env-file .env --env-file .deploy.env -f compose.prod.yaml logs -f api
 ```
@@ -103,8 +127,7 @@ VPS. Leave it disabled or see [COMPUTER.md](COMPUTER.md) before enabling it.
 
 ```sh
 docker build --target api -t openmuse-api:local .
-docker build --target web --build-arg PUBLIC_URL=https://<DOMAIN> -t openmuse-web:local .
+docker build --target web -t openmuse-web:local .
 docker build -t openmuse-browser-worker:local apps/worker
-cd infra && cp .env.production.example .env   # fill it in
-docker compose -f compose.prod.yaml up -d      # uses the :local tags
+cd infra && echo IMAGE_TAG=local > .deploy.env && ./deploy.sh   # uses the :local tags
 ```

@@ -1,6 +1,12 @@
-# Serves the web app and proxies /api to the API container. HTTPS is automatic
-# once DOMAIN points at the VPS and ports 80/443 are open.
-{$DOMAIN:localhost} {
+# Serves the web app and proxies /api to the API container. ./deploy.sh sets
+# SITE_ADDRESS and the ports: a public domain (Let's Encrypt), a *.ts.net name
+# (certificate from Tailscale) or "http://" for plain HTTP on 127.0.0.1.
+{
+	# A non-443 HTTPS port goes in SITE_ADDRESS (name:port) so redirects keep it.
+	http_port {$HTTP_PORT:80}
+}
+
+{$SITE_ADDRESS:localhost} {
 	encode zstd gzip
 
 	handle /api/* {
@@ -18,6 +24,7 @@
 	}
 
 	header {
+		# Ignored by browsers over plain HTTP (local mode).
 		Strict-Transport-Security "max-age=31536000"
 		X-Content-Type-Options nosniff
 		-Server

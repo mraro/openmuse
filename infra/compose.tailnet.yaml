@@ -1,0 +1,7 @@
+# Added by ./deploy.sh when NETWORK_MODE=tailnet. Caddy gets the *.ts.net
+# certificate from the host's Tailscale daemon. The directory is mounted, not
+# the socket file, so a restart of tailscaled is picked up.
+services:
+  web:
+    volumes:
+      - /var/run/tailscale:/var/run/tailscale

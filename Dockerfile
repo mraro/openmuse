@@ -1,6 +1,6 @@
 # Production images for the VPS deploy (see docs/DEPLOY.md).
 #   docker build --target api -t openmuse-api .
-#   docker build --target web --build-arg PUBLIC_URL=https://muse.example.com -t openmuse-web .
+#   docker build --target web -t openmuse-web .
 FROM node:24-slim AS base
 ENV PNPM_HOME=/pnpm PATH=/pnpm:$PATH CI=true
 RUN corepack enable
@@ -19,8 +19,9 @@ COPY packages packages
 RUN pnpm build:server
 
 FROM deps AS build-web
-ARG PUBLIC_URL
-RUN test -n "$PUBLIC_URL" || (echo "Set --build-arg PUBLIC_URL=https://your-domain" && exit 1)
+# The web app calls the API on whatever origin serves it, so one image works
+# for public, tailnet and local deploys.
+ARG PUBLIC_URL=same-origin
 ENV EXPO_PUBLIC_API_URL=$PUBLIC_URL
 COPY packages/domain packages/domain
 COPY apps/mobile apps/mobile
