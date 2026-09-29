@@ -1,8 +1,12 @@
 import { Platform } from "react-native";
 
+const configuredApiUrl = process.env.EXPO_PUBLIC_API_URL;
+// "same-origin" lets one web build work on any domain or port (see docs/DEPLOY.md).
 export const API_URL = (
-  process.env.EXPO_PUBLIC_API_URL ||
-  (Platform.OS === "android" ? "http://10.0.2.2:8787" : "http://localhost:8787")
+  configuredApiUrl === "same-origin" && Platform.OS === "web"
+    ? window.location.origin
+    : configuredApiUrl ||
+      (Platform.OS === "android" ? "http://10.0.2.2:8787" : "http://localhost:8787")
 ).replace(/\/$/, "");
 
 export class MuseApi {

@@ -133,6 +133,8 @@ By default, embedded PGlite, documents and the signing key live in `.openmuse/`;
 
 For a separate task worker, configure the same `DATABASE_URL`, secrets and shared `DATA_DIR` for both processes, then set `TASK_WORKER_ENABLED=false` on the API and run `pnpm dev:worker`. PGlite cannot be opened by separate processes. Production commands are `pnpm build:server`, `pnpm start` and `pnpm start:worker`. Run one API instance; task workers coordinate through SQL leases.
 
+To run on your own server with HTTPS and automatic deploys on every push to `main`, follow [Deploy to a VPS](docs/DEPLOY.md).
+
 No hidden retry occurs after an uncertain external write. Review its provider outcome before creating a replacement. Pausing/cancelling prevents subsequent task steps; an already approved in-flight provider request may finish.
 
 ## CopilotKit Rich Threads

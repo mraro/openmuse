@@ -1,0 +1,8 @@
+# Added by ./deploy.sh in tailnet mode when the host has a Tailscale IPv6
+# address, so MagicDNS clients that prefer IPv6 connect too.
+services:
+  web:
+    ports:
+      - "[${BIND_ADDRESS6}]:${HTTP_PORT:-80}:${HTTP_PORT:-80}"
+      - "[${BIND_ADDRESS6}]:${HTTPS_PORT:-443}:${HTTPS_PORT:-443}"
+      - "[${BIND_ADDRESS6}]:${HTTPS_PORT:-443}:${HTTPS_PORT:-443}/udp"

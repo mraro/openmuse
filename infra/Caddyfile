@@ -1,0 +1,32 @@
+# Serves the web app and proxies /api to the API container. ./deploy.sh sets
+# SITE_ADDRESS and the ports: a public domain (Let's Encrypt), a *.ts.net name
+# (certificate from Tailscale) or "http://" for plain HTTP on 127.0.0.1.
+{
+	# A non-443 HTTPS port goes in SITE_ADDRESS (name:port) so redirects keep it.
+	http_port {$HTTP_PORT:80}
+}
+
+{$SITE_ADDRESS:localhost} {
+	encode zstd gzip
+
+	handle /api/* {
+		reverse_proxy api:8787 {
+			flush_interval -1
+		}
+	}
+
+	handle {
+		root * /srv
+		try_files {path} {path}.html /index.html
+		file_server
+		@assets path /_expo/* /assets/*
+		header @assets Cache-Control "public, max-age=31536000, immutable"
+	}
+
+	header {
+		# Ignored by browsers over plain HTTP (local mode).
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options nosniff
+		-Server
+	}
+}
