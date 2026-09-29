@@ -1,0 +1,25 @@
+# Serves the web app and proxies /api to the API container. HTTPS is automatic
+# once DOMAIN points at the VPS and ports 80/443 are open.
+{$DOMAIN:localhost} {
+	encode zstd gzip
+
+	handle /api/* {
+		reverse_proxy api:8787 {
+			flush_interval -1
+		}
+	}
+
+	handle {
+		root * /srv
+		try_files {path} {path}.html /index.html
+		file_server
+		@assets path /_expo/* /assets/*
+		header @assets Cache-Control "public, max-age=31536000, immutable"
+	}
+
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options nosniff
+		-Server
+	}
+}

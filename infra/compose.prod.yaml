@@ -1,0 +1,73 @@
+# Production stack for a single VPS. Deployed by .github/workflows/deploy.yml;
+# see docs/DEPLOY.md. Run from the directory holding this file, Caddyfile and .env.
+name: openmuse
+services:
+  web:
+    image: ${IMAGE_PREFIX:-openmuse}-web:${IMAGE_TAG:-local}
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+    environment:
+      DOMAIN: ${DOMAIN:?Set DOMAIN in .env}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - caddy-data:/data
+      - caddy-config:/config
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2019/config/"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+
+  api:
+    image: ${IMAGE_PREFIX:-openmuse}-api:${IMAGE_TAG:-local}
+    init: true
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      HOST: 0.0.0.0
+      PORT: 8787
+      DATA_DIR: /data
+      PUBLIC_API_URL: https://${DOMAIN}
+      ALLOWED_ORIGINS: https://${DOMAIN}
+      BROWSER_WORKER_URL: http://browser-worker:8790
+    volumes:
+      - api-data:/data
+    depends_on:
+      browser-worker:
+        condition: service_healthy
+
+  browser-worker:
+    image: ${IMAGE_PREFIX:-openmuse}-browser-worker:${IMAGE_TAG:-local}
+    init: true
+    restart: unless-stopped
+    environment:
+      WORKER_HOST: 0.0.0.0
+      WORKER_TOKEN: ${WORKER_TOKEN:?Set WORKER_TOKEN to a random secret of at least 32 characters}
+    volumes:
+      - browser-profiles:/data
+    tmpfs:
+      - /tmp:size=256m,mode=1777
+    shm_size: 256mb
+    mem_limit: 2g
+    pids_limit: 256
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8790/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  api-data:
+  browser-profiles:
+  caddy-data:
+  caddy-config:

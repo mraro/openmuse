@@ -12,6 +12,7 @@ The demos follow a request from chat to the agent's inline browser, then show ho
 - [Native iOS / Android / web setup](../apps/mobile/README.md)
 - [Browser worker, API, persistence, and network boundary](../apps/worker/README.md)
 - [Linux computer, terminal, and workspace files](COMPUTER.md)
+- [Deploy to a VPS with automatic deploys](DEPLOY.md)
 - [CopilotKit Rich Threads](RICH-THREADS.md)
 - [Interaction design and conversation behavior](EXPERIENCE.md)
 - [OpenBot integration contract](OPENBOT-INTEGRATION.md)

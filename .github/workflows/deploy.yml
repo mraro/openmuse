@@ -1,0 +1,119 @@
+name: Deploy
+# Builds the production images after CI passes on main, pushes them to GHCR,
+# then restarts the stack on the VPS over SSH. Setup: docs/DEPLOY.md.
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+  packages: write
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+jobs:
+  images:
+    # Skips until the repository variable DOMAIN is set (docs/DEPLOY.md).
+    if: vars.DOMAIN != '' && (github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      prefix: ${{ steps.meta.outputs.prefix }}
+      tag: ${{ steps.meta.outputs.tag }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          persist-credentials: false
+      - id: meta
+        env:
+          OWNER: ${{ github.repository_owner }}
+          SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+        run: |
+          echo "prefix=ghcr.io/${OWNER,,}/openmuse" >> "$GITHUB_OUTPUT"
+          echo "tag=${SHA::12}" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: API image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: api
+          push: true
+          tags: ${{ steps.meta.outputs.prefix }}-api:${{ steps.meta.outputs.tag }},${{ steps.meta.outputs.prefix }}-api:latest
+          cache-from: type=gha,scope=api
+          cache-to: type=gha,scope=api,mode=max
+      - name: Web image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: web
+          build-args: PUBLIC_URL=https://${{ vars.DOMAIN }}
+          push: true
+          tags: ${{ steps.meta.outputs.prefix }}-web:${{ steps.meta.outputs.tag }},${{ steps.meta.outputs.prefix }}-web:latest
+          cache-from: type=gha,scope=web
+          cache-to: type=gha,scope=web,mode=max
+      - name: Browser worker image
+        uses: docker/build-push-action@v6
+        with:
+          context: apps/worker
+          push: true
+          tags: ${{ steps.meta.outputs.prefix }}-browser-worker:${{ steps.meta.outputs.tag }},${{ steps.meta.outputs.prefix }}-browser-worker:latest
+          cache-from: type=gha,scope=worker
+          cache-to: type=gha,scope=worker,mode=max
+
+  deploy:
+    needs: images
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment:
+      name: production
+      url: https://${{ vars.DOMAIN }}
+    env:
+      DEPLOY_PATH: ${{ vars.DEPLOY_PATH || '/opt/openmuse' }}
+      SSH_PORT: ${{ secrets.VPS_PORT || '22' }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          persist-credentials: false
+      - name: Configure SSH
+        env:
+          SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.VPS_KNOWN_HOSTS }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/id_deploy
+          chmod 600 ~/.ssh/id_deploy
+          if [ -n "$KNOWN_HOSTS" ]; then
+            printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+          else
+            ssh-keyscan -p "$SSH_PORT" "$VPS_HOST" > ~/.ssh/known_hosts
+          fi
+          printf 'Host vps\n  HostName %s\n  User %s\n  Port %s\n  IdentityFile ~/.ssh/id_deploy\n' \
+            "$VPS_HOST" "$VPS_USER" "$SSH_PORT" > ~/.ssh/config
+      - name: Upload stack files
+        run: |
+          ssh vps "mkdir -p '$DEPLOY_PATH'"
+          scp infra/compose.prod.yaml infra/deploy.sh infra/.env.production.example "vps:$DEPLOY_PATH/"
+      - name: Pull and restart
+        env:
+          PREFIX: ${{ needs.images.outputs.prefix }}
+          TAG: ${{ needs.images.outputs.tag }}
+          REGISTRY_USER: ${{ github.actor }}
+          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          printf '%s' "$REGISTRY_TOKEN" | ssh vps "docker login ghcr.io -u '$REGISTRY_USER' --password-stdin"
+          ssh vps "cd '$DEPLOY_PATH' && printf 'IMAGE_PREFIX=%s\nIMAGE_TAG=%s\n' '$PREFIX' '$TAG' > .deploy.env && ./deploy.sh; status=\$?; docker logout ghcr.io >/dev/null; exit \$status"
+      - name: Health check
+        env:
+          DOMAIN: ${{ vars.DOMAIN }}
+        run: curl --fail --silent --show-error --retry 10 --retry-delay 6 --retry-all-errors "https://$DOMAIN/api/health"
